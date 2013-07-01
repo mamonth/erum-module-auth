@@ -1,14 +1,11 @@
 <?php
+/**
+ * Basic authorization module
+ *
+ * @method static Auth factory() factory( $configAlias = 'default' )
+ */
 class Auth extends \Erum\ModuleAbstract
 {
-
-    /**
-     * Current authorized model
-     *
-     * @var \Erum\ModelAbstract
-     */
-    private $model;
-
     /**
      * Auth model DAO
      *
@@ -21,7 +18,14 @@ class Auth extends \Erum\ModuleAbstract
      *
      * @var string
      */
-    private $salt;  
+    private $salt;
+
+    /**
+     * Cookie name for storing auth token
+     *
+     * @var string
+     */
+    private $cookie;
     
     public function __construct( array $config )
     {
@@ -29,67 +33,66 @@ class Auth extends \Erum\ModuleAbstract
         
         $this->salt = isset( $config[ 'salt' ] ) ? $config['salt'] : null;
     }
-    
-    /**
-     * Enter description here...
-     *
-     * @return  \Erum\ModelAbstract
-     */
-    public function current()
-    {
-        
-        $dao = $this->dao;
-        
-        $modelClass = $dao::getModelClass();
-        
-        if ( null === $this->model && \Erum\Session::current()->authId )
-        {
-            $model = $dao::get( explode( chr(1), \Erum\Session::current()->authId ) );
-            
-            if( $model instanceof $modelClass  )
-            {
-                $this->model = $model;
-            }
-            else //something goes wrong
-            {
-                \Erum\Session::current()->authId = null;
-            }
-        }
-        
-        return $this->model;
-    }
 
-    public function request( $login, $password, $remember = false )
+    public function request( $login, $password )
     {
         $dao = $this->dao;
-        $modelClass = $dao::getModelClass();
-        
-        $model = $dao::authRequest( $login, $password );
-        
-        if( $model instanceof $modelClass )
-        {
-            $this->model = $model;
 
-            $identityProperty = (array)$this->model->identityProperty();
-
-            $key = array();
-
-            while( list( ,$property ) = each( $identityProperty ) )
-            {
-                $key[] = $this->model->{$property};
-            }
-
-            \Erum\Session::current()->set( 'authId', implode( chr(1), $key ) );
-            
-            return true;
-        }
-        
-        return false;
+        return $dao::authRequest( $login, $password );
     }
 
-    public function destroy()
+    public function store( $authId, $timeout = 0 )
     {
-        \Erum\Session::current()->authId = null;
+        $dao        = $this->dao;
+        $authToken  = $this->generateToken();
+
+        if( !$dao::authSet( $authToken, $authId, $timeout ) )
+        {
+            $authToken = false;
+        }
+
+        return $authToken;
     }
 
+    public function get( $token )
+    {
+        $dao    = $this->dao;
+        $authId = false;
+
+        // if token was compromised - kill it
+        if( !$this->validateToken( $token ) )
+        {
+            $this->destroy( $token );
+        }
+        else
+        {
+            $authId = $dao::authGet( $token );
+        }
+
+        return $authId;
+    }
+
+    public function destroy( $token )
+    {
+        $dao = $this->dao;
+
+        return $dao::authDestroy( $token );
+    }
+
+    public function validateToken( $token )
+    {
+        return strpos( $token, $this->getSignature() ) === 0;
+    }
+
+    private function generateToken()
+    {
+        return $this->getSignature() . sha1( microtime( true ) . rand( 0, time() ) );
+    }
+
+    private function getSignature()
+    {
+        $hash = $this->salt;
+
+        return md5( $hash );
+    }
 }
